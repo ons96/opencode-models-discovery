@@ -18,10 +18,14 @@ describe('ModelDiscovery Plugin', () => {
 
   beforeEach(async () => {
     mockFetch.mockClear()
+    delete process.env.OPENCODE_AUTH_CONTENT
 
     mockClient = {
       app: {
         log: vi.fn().mockResolvedValue(true)
+      },
+      config: {
+        providers: vi.fn().mockResolvedValue({ data: { providers: [] } })
       },
       tui: {
         showToast: vi.fn().mockResolvedValue(true)
@@ -47,6 +51,7 @@ describe('ModelDiscovery Plugin', () => {
   })
 
   afterEach(() => {
+    delete process.env.OPENCODE_AUTH_CONTENT
     vi.restoreAllMocks()
   })
 
@@ -148,6 +153,196 @@ describe('ModelDiscovery Plugin', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:11434/v1/models', expect.objectContaining({
         method: 'GET'
+      }))
+    })
+
+    it('should use resolved provider key from OpenCode auth when options.apiKey is absent', async () => {
+      mockClient.config.providers.mockResolvedValueOnce({
+        data: {
+          providers: [
+            { id: 'test_provider', key: 'connected-key' }
+          ]
+        }
+      })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'connected-model', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const config: any = {
+        provider: {
+          test_provider: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Test Provider',
+            options: { baseURL: 'http://127.0.0.1:4000/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      expect(config.provider.test_provider.models['connected-model']).toBeDefined()
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:4000/v1/models', expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer connected-key'
+        })
+      }))
+    })
+
+    it('should prefer explicit options.apiKey over resolved provider key', async () => {
+      mockClient.config.providers.mockResolvedValueOnce({
+        data: {
+          providers: [
+            { id: 'test_provider', key: 'connected-key' }
+          ]
+        }
+      })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'explicit-model', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const config: any = {
+        provider: {
+          test_provider: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Test Provider',
+            options: {
+              baseURL: 'http://127.0.0.1:4000/v1',
+              apiKey: 'explicit-key'
+            },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      expect(config.provider.test_provider.models['explicit-model']).toBeDefined()
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:4000/v1/models', expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer explicit-key'
+        })
+      }))
+    })
+
+    it('should not block explicit apiKey providers on resolved provider loading', async () => {
+      mockClient.config.providers.mockImplementationOnce(() => new Promise(() => {}))
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'explicit-fast-model', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const config: any = {
+        provider: {
+          hyy: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'HYY',
+            options: {
+              baseURL: 'http://127.0.0.1:4000/v1',
+              apiKey: 'explicit-key'
+            },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      expect(mockClient.config.providers).not.toHaveBeenCalled()
+      expect(config.provider.hyy.models['explicit-fast-model']).toBeDefined()
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:4000/v1/models', expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer explicit-key'
+        })
+      }))
+    })
+
+    it('should continue discovery without auth when resolved providers cannot be loaded', async () => {
+      mockClient.config.providers.mockRejectedValueOnce(new Error('provider resolution failed'))
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'fallback-model', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const config: any = {
+        provider: {
+          no_auth_provider: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'No Auth Provider',
+            options: { baseURL: 'http://127.0.0.1:4000/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      expect(config.provider.no_auth_provider.models['fallback-model']).toBeDefined()
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:4000/v1/models', expect.objectContaining({
+        method: 'GET',
+        headers: expect.not.objectContaining({
+          Authorization: expect.any(String)
+        })
+      }))
+    })
+
+    it('should fall back to OpenCode auth content when resolved providers cannot be loaded', async () => {
+      process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+        test_provider: {
+          type: 'api',
+          key: 'auth-store-key'
+        }
+      })
+      mockClient.config.providers.mockRejectedValueOnce(new Error('provider resolution failed'))
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'auth-store-model', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const config: any = {
+        provider: {
+          test_provider: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Test Provider',
+            options: { baseURL: 'http://127.0.0.1:4000/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      expect(config.provider.test_provider.models['auth-store-model']).toBeDefined()
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:4000/v1/models', expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer auth-store-key'
+        })
       }))
     })
 

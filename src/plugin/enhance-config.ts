@@ -1,3 +1,6 @@
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { xdgData } from 'xdg-basedir'
 import { ToastNotifier } from '../ui/toast-notifier'
 import { categorizeModel, formatModelName, extractModelOwner } from '../utils'
 import { normalizeBaseURL, discoverModelsFromProvider, discoverModelInfoFromProvider, autoDetectOpenAICompatibleProvider, canDiscoverModels } from '../utils/openai-compatible-api'
@@ -14,6 +17,138 @@ interface DiscoveredProvider {
   models: Record<string, any>
 }
 
+interface ResolvedProvider {
+  id?: string
+  key?: string
+}
+
+interface ResolvedProvidersLoader {
+  promise?: Promise<Map<string, ResolvedProvider>>
+}
+
+interface OpenCodeAuth {
+  type?: string
+  key?: string
+}
+
+const RESOLVED_PROVIDERS_TIMEOUT_MS = 250
+
+async function getResolvedProvidersByID(
+  client: PluginInput['client'],
+  logger: PluginLogger,
+  timeoutMs: number = RESOLVED_PROVIDERS_TIMEOUT_MS
+): Promise<Map<string, ResolvedProvider>> {
+  try {
+    const loadProviders = client.config?.providers
+    if (typeof loadProviders !== 'function') {
+      return new Map()
+    }
+
+    const result = await Promise.race([
+      loadProviders.call(client.config),
+      new Promise<undefined>((resolve) => {
+        setTimeout(() => resolve(undefined), timeoutMs)
+      })
+    ])
+
+    if (!result) {
+      logger.debug('Timed out loading resolved providers')
+      return new Map()
+    }
+
+    const providers = result?.data?.providers
+    if (!Array.isArray(providers)) {
+      return new Map()
+    }
+
+    return new Map(
+      providers
+        .filter((provider: ResolvedProvider) => typeof provider?.id === 'string')
+        .map((provider: ResolvedProvider) => [provider.id!, provider])
+    )
+  } catch (error) {
+    logger.debug('Could not load resolved providers', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return new Map()
+  }
+}
+
+function getOpenCodeAuthFile(): string | undefined {
+  if (!xdgData) {
+    return undefined
+  }
+
+  return path.join(xdgData, 'opencode', 'auth.json')
+}
+
+async function getOpenCodeAuth(providerName: string, logger: PluginLogger): Promise<OpenCodeAuth | undefined> {
+  const normalizedProviderName = providerName.replace(/\/+$/, '')
+
+  try {
+    if (process.env.OPENCODE_AUTH_CONTENT) {
+      const auths = JSON.parse(process.env.OPENCODE_AUTH_CONTENT) as Record<string, OpenCodeAuth>
+      return auths[providerName] ?? auths[normalizedProviderName] ?? auths[`${normalizedProviderName}/`]
+    }
+  } catch (error) {
+    logger.debug('Could not parse OPENCODE_AUTH_CONTENT', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const file = getOpenCodeAuthFile()
+  if (file) {
+    try {
+      const auths = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, OpenCodeAuth>
+      return auths[providerName] ?? auths[normalizedProviderName] ?? auths[`${normalizedProviderName}/`]
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        logger.debug('Could not read OpenCode auth store', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+
+  return undefined
+}
+
+function getConfiguredApiKey(providerConfig: any): string | undefined {
+  const explicitApiKey = providerConfig.options?.apiKey
+  if (typeof explicitApiKey === 'string' && explicitApiKey.trim().length > 0) {
+    return explicitApiKey
+  }
+
+  return undefined
+}
+
+async function getProviderApiKey(
+  providerName: string,
+  providerConfig: any,
+  client: PluginInput['client'],
+  loader: ResolvedProvidersLoader,
+  logger: PluginLogger
+): Promise<string | undefined> {
+  const explicitApiKey = getConfiguredApiKey(providerConfig)
+  if (explicitApiKey) {
+    return explicitApiKey
+  }
+
+  loader.promise ??= getResolvedProvidersByID(client, logger)
+  const resolvedProvider = (await loader.promise).get(providerName)
+
+  if (typeof resolvedProvider?.key === 'string' && resolvedProvider.key.trim().length > 0) {
+    return resolvedProvider.key
+  }
+
+  const auth = await getOpenCodeAuth(providerName, logger)
+  if (auth?.type === 'api' && typeof auth.key === 'string' && auth.key.trim().length > 0) {
+    return auth.key
+  }
+
+  return undefined
+}
+
 export async function enhanceConfig(
   config: any,
   client: PluginInput['client'],
@@ -28,6 +163,7 @@ export async function enhanceConfig(
     const modelRegexFilter = getModelRegexFilter(pluginConfig, logger.child({ category: 'filtering' }))
     const discoveryConfig = getDiscoveryConfig(pluginConfig)
     const globalDiscoveryEnabled = discoveryConfig.enabled
+    const resolvedProvidersLoader: ResolvedProvidersLoader = {}
 
     for (const [providerName, providerConfig] of Object.entries(providers)) {
       const p = providerConfig as any
@@ -56,7 +192,7 @@ export async function enhanceConfig(
         continue
       }
 
-      const apiKey = p.options?.apiKey
+      const apiKey = await getProviderApiKey(providerName, p, client, resolvedProvidersLoader, logger)
 
       let models: OpenAIModel[]
       const discovery = await discoverModelsFromProvider(baseURL, apiKey, modelsEndpoint)

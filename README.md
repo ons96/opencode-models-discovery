@@ -44,28 +44,58 @@ Add the plugin to your `opencode.json`:
     "opencode-models-discovery@latest"
   ],
   "provider": {
-    "deepseek": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "DeepSeek",
-      "options": {
-        "baseURL": "https://api.deepseek.com",
-        "apiKey": "YOUR_DEEPSEEK_API_KEY",
-        "modelsDiscovery": {
-          "enabled": true,
-          "endpoint": "/models"
-        }
-      }
-    },
     "lmstudio": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "LM Studio (local)",
       "options": {
-        "baseURL": "http://127.0.0.1:1234/v1"
+        "baseURL": "http://127.0.0.1:1234/v1",
+        "modelsDiscovery": {
+          "enabled": true
+        }
       }
     }
   }
 }
 ```
+
+### Using `/connect` for Custom Providers
+
+For custom OpenAI-compatible providers, you still need to define the provider itself in `opencode.json` so OpenCode and this plugin know the provider id, npm package, and `baseURL`.
+
+However, you do **not** have to hardcode `options.apiKey` when the provider credential is managed through OpenCode `/connect`.
+
+Example:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-models-discovery@latest"
+  ],
+  "provider": {
+    "test_provider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Test Provider",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "modelsDiscovery": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+Then run `/connect`, choose the same provider id, and save the API key there.
+
+Credential precedence for discovery requests is:
+
+1. `provider.<name>.options.apiKey`
+2. OpenCode resolved provider key, when available during plugin startup
+3. OpenCode `/connect` auth store for same-id `type: "api"` credentials
+
+This means existing explicit `apiKey` configs keep working, while custom providers can also rely on `/connect` without duplicating the key in `opencode.json`.
 
 ### Configuration
 
@@ -331,9 +361,16 @@ Regex filtering only applies to auto-discovered models. Models already explicitl
 1. On OpenCode startup, the plugin's `config` hook is called
 2. The plugin iterates through all configured providers
 3. For each provider, it checks whether it is OpenAI-compatible by npm, by a `/v1` baseURL, by an explicit discovery endpoint override, or by a forced provider-level discovery override
-4. For each accessible provider, it queries the configured models endpoint, defaulting to `/v1/models`
-5. Discovered models are automatically merged into the provider's configuration
-6. The enhanced configuration is used for the current session
+4. For each accessible provider, it resolves discovery auth from explicit config first and then from OpenCode-managed auth when available
+5. It queries the configured models endpoint, defaulting to `/v1/models`
+6. Discovered models are automatically merged into the provider's configuration
+7. The enhanced configuration is used for the current session
+
+Notes:
+
+- OpenCode's provider resolution API can time out inside the `config` hook, so the plugin includes a fallback for `/connect` API-key credentials.
+- That fallback first respects `OPENCODE_AUTH_CONTENT`, then reads the same OpenCode auth store location derived from `xdg-basedir` that OpenCode uses for `Global.Path.data`.
+- The plugin never writes the recovered key back into `opencode.json` and never logs the secret value.
 
 ### Supported Providers
 
@@ -471,6 +508,16 @@ This means providers using `@ai-sdk/anthropic` with OpenAI-compatible backends a
 When available, the plugin writes logs through OpenCode's structured server log API via `client.app.log(...)` using the service name `opencode-models-discovery`.
 
 If structured logging is unavailable in the runtime, the plugin falls back to prefixed `console.*` output. Key log categories are emitted through metadata such as `plugin`, `config`, `discovery`, `event`, and `filtering` to make local debugging easier with `opencode --print-logs`.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=yuhp%2Fopencode-models-discovery&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yuhp/opencode-models-discovery&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yuhp/opencode-models-discovery&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yuhp/opencode-models-discovery&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 

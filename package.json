@@ -46,7 +46,8 @@
     "url": "git+https://github.com/yuhp/opencode-models-discovery.git"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.0.166"
+    "@opencode-ai/plugin": "^1.0.166",
+    "xdg-basedir": "^5.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",

@@ -1,6 +1,11 @@
+import http from 'node:http'
+import https from 'node:https'
 import type { OpenAIModel, OpenAIModelsResponse } from '../types'
 
 const OPENAI_COMPATIBLE_MODELS_ENDPOINT = "/v1/models"
+const REQUEST_TIMEOUT_MS = 3000
+// Patch-level compatibility fallback. See docs/issues/issue-19-fetch-fallback.md
+// before broadening this into the planned low-level HTTP helper refactor.
 
 export interface ModelsDiscoveryResult {
   ok: boolean
@@ -25,36 +30,83 @@ export function buildAPIURL(baseURL: string, endpoint: string = OPENAI_COMPATIBL
   return `${normalized}${endpoint}`
 }
 
+async function fetchJson<T>(url: string, headers: Record<string, string>): Promise<T | undefined> {
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+
+  if (!response.ok) {
+    return undefined
+  }
+
+  try {
+    return await response.json() as T
+  } catch {
+    return undefined
+  }
+}
+
+function fetchJsonViaHttpModule<T>(urlStr: string, headers: Record<string, string>): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (data: T | undefined) => {
+      if (!settled) {
+        settled = true
+        resolve(data)
+      }
+    }
+
+    const urlObj = new URL(urlStr)
+    const mod = urlObj.protocol === 'https:' ? https : http
+
+    const req = mod.get(urlObj, { headers, timeout: REQUEST_TIMEOUT_MS }, (res) => {
+      let data = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk: string) => data += chunk)
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          finish(undefined)
+          return
+        }
+
+        try {
+          finish(JSON.parse(data) as T)
+        } catch {
+          finish(undefined)
+        }
+      })
+      res.on('error', () => finish(undefined))
+    })
+
+    req.on('error', () => finish(undefined))
+    req.on('timeout', () => {
+      req.destroy()
+      finish(undefined)
+    })
+  })
+}
+
 export async function discoverModelsFromProvider(
   baseURL: string,
   apiKey?: string,
   endpoint: string = OPENAI_COMPATIBLE_MODELS_ENDPOINT
 ): Promise<ModelsDiscoveryResult> {
+  const url = buildAPIURL(baseURL, endpoint)
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  }
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`
+  }
+
   try {
-    const url = buildAPIURL(baseURL, endpoint)
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    }
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`
-    }
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(3000),
-    })
-
-    if (!response.ok) {
-      return { ok: false, models: [] }
-    }
-
-    const data = (await response.json()) as OpenAIModelsResponse
-    return {
-      ok: true,
-      models: data.data ?? [],
-    }
+    const data = await fetchJson<OpenAIModelsResponse>(url, headers)
+    return data ? { ok: true, models: data.data ?? [] } : { ok: false, models: [] }
   } catch {
-    return { ok: false, models: [] }
+    const data = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
+    return data ? { ok: true, models: data.data ?? [] } : { ok: false, models: [] }
   }
 }
 
@@ -63,49 +115,33 @@ export async function discoverModelInfoFromProvider(
   apiKey?: string,
   endpoint: string = "/v1/model/info"
 ): Promise<ModelInfoDiscoveryResult> {
+  const url = buildAPIURL(baseURL, endpoint)
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  }
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`
+  }
+
   try {
-    const url = buildAPIURL(baseURL, endpoint)
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    }
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`
-    }
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(3000),
-    })
-
-    if (!response.ok) {
-      return { ok: false, data: undefined }
-    }
-
-    const data = await response.json()
-    return {
-      ok: true,
-      data,
-    }
+    const data = await fetchJson<unknown>(url, headers)
+    return data !== undefined ? { ok: true, data } : { ok: false, data: undefined }
   } catch {
-    return { ok: false, data: undefined }
+    const data = await fetchJsonViaHttpModule<unknown>(url, headers)
+    return data !== undefined ? { ok: true, data } : { ok: false, data: undefined }
   }
 }
 
 export async function fetchModelsDirect(baseURL: string, endpoint: string = OPENAI_COMPATIBLE_MODELS_ENDPOINT): Promise<string[]> {
-  try {
-    const url = buildAPIURL(baseURL, endpoint)
-    const response = await fetch(url, {
-      method: "GET",
-      signal: AbortSignal.timeout(3000),
-    })
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-    }
+  const url = buildAPIURL(baseURL, endpoint)
+  const headers = { "Content-Type": "application/json" }
 
-    const data = (await response.json()) as OpenAIModelsResponse
-    return data.data?.map(model => model.id) || []
+  try {
+    const data = await fetchJson<OpenAIModelsResponse>(url, headers)
+    return data?.data?.map(model => model.id) || []
   } catch {
-    return []
+    const data = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
+    return data?.data?.map(model => model.id) || []
   }
 }
 

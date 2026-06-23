@@ -9,6 +9,7 @@ export interface PluginConfig {
   }
   discovery?: {
     enabled?: boolean
+    timeoutMs?: number // ponytail: default 60_000, configurable
   }
   smartModelName?: boolean
 }

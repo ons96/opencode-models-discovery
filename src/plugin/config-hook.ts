@@ -36,7 +36,9 @@ export function createConfigHook(
       pluginConfig,
       logger.child({ category: 'discovery' })
     )
-    const timeoutMs = 5000
+    // ponytail: 60s default. Parallel discovery (concurrency=10) + 3s per-request
+    // = ~30s for 100 providers. 60s gives headroom for slow providers.
+    const timeoutMs = pluginConfig.discovery?.timeoutMs ?? 60_000
 
     try {
       await Promise.race([

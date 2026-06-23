@@ -3,7 +3,7 @@ import path from 'node:path'
 import { xdgData } from 'xdg-basedir'
 import { ToastNotifier } from '../ui/toast-notifier'
 import { categorizeModel, formatModelName, extractModelOwner } from '../utils'
-import { normalizeBaseURL, discoverModelsFromProvider, discoverModelInfoFromProvider, autoDetectOpenAICompatibleProvider, canDiscoverModels } from '../utils/openai-compatible-api'
+import { normalizeBaseURL, discoverModelsFromProvider, discoverModelInfoFromProvider, autoDetectOpenAICompatibleProvider } from '../utils/openai-compatible-api'
 import { createModelInfoEnricher, isSupportedModelInfoFormat, type ModelInfoEnricher } from '../utils/model-info'
 import { getProviderFilter, getDiscoveryConfig, getModelRegexFilter, getProviderModelRegexFilter, shouldDiscoverModel, shouldDiscoverProviderWithOverride } from '../types/plugin-config'
 import { readCache, writeCache, type CacheData } from '../utils/cache'
@@ -224,11 +224,9 @@ export async function enhanceConfig(
       const modelInfoEndpoint = providerDiscoveryConfig.modelInfoEndpoint
       const modelInfoFormat = providerDiscoveryConfig.modelInfoFormat
       const filterNonChat = providerDiscoveryConfig.filterNonChat !== false
-      const forceDiscoveryEnabled = providerDiscoveryConfig.enabled === true
-
-      if (!forceDiscoveryEnabled && !canDiscoverModels(p)) {
-        continue
-      }
+      // ponytail: probe any provider with a baseURL, not just npm-detected ones.
+      // Users may have providers without @ai-sdk/openai-compatible that still serve /v1/models.
+      // API failures are handled gracefully (cache fallback + 3s timeout per request).
 
       if (!shouldDiscoverProviderWithOverride(providerName, providerFilter, globalDiscoveryEnabled, providerDiscoveryConfig)) {
         logger.debug(`Provider ${providerName} model discovery disabled by configuration`)

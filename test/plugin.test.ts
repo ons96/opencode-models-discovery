@@ -791,7 +791,7 @@ describe('ModelDiscovery Plugin', () => {
       consoleSpy.mockRestore()
     })
 
-    it('should skip non-OpenAI-compatible providers', async () => {
+    it('should gracefully handle providers without /v1 baseURL (probe + fail)', async () => {
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
       const config: any = {
         provider: {

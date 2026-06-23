@@ -18,10 +18,10 @@ export interface ModelInfoDiscoveryResult {
 }
 
 export function normalizeBaseURL(baseURL: string): string {
+  // ponytail: strip trailing slashes + any /vN version suffix (v1, v2, v3...)
+  // so probe URL becomes {root}/v1/models regardless of provider's API version path.
   let normalized = baseURL.replace(/\/+$/, '')
-  if (normalized.endsWith('/v1')) {
-    normalized = normalized.slice(0, -3)
-  }
+  normalized = normalized.replace(/\/v\d+$/, '')
   return normalized
 }
 

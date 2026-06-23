@@ -10,6 +10,7 @@ export interface PluginConfig {
   discovery?: {
     enabled?: boolean
     timeoutMs?: number // ponytail: default 60_000, configurable
+    maxAgeMs?: number // ponytail: cache freshness threshold, 0 = never expire (default)
   }
   smartModelName?: boolean
 }

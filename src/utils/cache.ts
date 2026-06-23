@@ -23,7 +23,9 @@ const MAX_CACHE_FILES = 10
 const MIN_CACHE_SIZE_BYTES = 100 * 1024 // 100KB — small files are never deleted
 
 function getCacheDir(): string {
-  const base = xdgCache || path.join(process.env.HOME || '/tmp', '.cache')
+  // ponytail: read process.env at call time (not import time) so tests can
+  // set XDG_CACHE_HOME dynamically via env var override.
+  const base = process.env.XDG_CACHE_HOME || xdgCache || path.join(process.env.HOME || '/tmp', '.cache')
   return path.join(base, CACHE_SUBDIR)
 }
 

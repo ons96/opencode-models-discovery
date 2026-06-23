@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi, afterEach, afterAll } from 'vitest'
 import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { ModelDiscoveryPlugin } from '../src/index.ts'
+
+// ponytail: isolate test cache from real cache via temp XDG_CACHE_HOME
+const TEST_CACHE_DIR = path.join(tmpdir(), `opencode-md-test-${Date.now()}`)
 
 const mockFetch = vi.fn()
 global.fetch = mockFetch
@@ -20,6 +25,7 @@ describe('ModelDiscovery Plugin', () => {
   beforeEach(async () => {
     mockFetch.mockClear()
     process.env.MODELS_DISCOVERY_FORCE = '1' // bypass throttle in tests
+    process.env.XDG_CACHE_HOME = TEST_CACHE_DIR // isolate cache from real user dir
     delete process.env.OPENCODE_AUTH_CONTENT
     delete process.env.OPENCODE
     delete process.env.OPENCODE_PID
@@ -58,12 +64,17 @@ describe('ModelDiscovery Plugin', () => {
 
   afterEach(() => {
     delete process.env.MODELS_DISCOVERY_FORCE
+    delete process.env.XDG_CACHE_HOME
     delete process.env.OPENCODE_AUTH_CONTENT
     delete process.env.OPENCODE
     delete process.env.OPENCODE_PID
     delete process.env.MIMOCODE
     delete process.env.MIMOCODE_PID
     vi.restoreAllMocks()
+  })
+
+  afterAll(async () => {
+    await fs.rm(TEST_CACHE_DIR, { recursive: true, force: true }).catch(() => {})
   })
 
   describe('Plugin Initialization', () => {

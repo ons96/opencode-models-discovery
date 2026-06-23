@@ -46,7 +46,7 @@ async function ensureDir(dir: string): Promise<void> {
 /**
  * Read the latest cache file. Falls back to newest timestamp file if latest.json missing.
  */
-export async function readCache(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<CacheData> {
+export async function readCache(logger?: WriteLogger): Promise<CacheData> {
   const cacheDir = getCacheDir()
   const empty: CacheData = { version: 1, providers: {} }
 
@@ -95,35 +95,37 @@ export async function readCache(logger?: { debug: (msg: string, ctx?: any) => vo
   return empty
 }
 
+type WriteLogger = { info: (msg: string, ctx?: any) => void; error: (msg: string, ctx?: any) => void; debug: (msg: string, ctx?: any) => void }
+
 /**
  * Write cache: updates latest.json + creates a timestamped snapshot.
  * Then rotates old files (keeps MAX_CACHE_FILES, with safety checks).
  */
 export async function writeCache(
   data: CacheData,
-  logger?: { debug: (msg: string, ctx?: any) => void }
+  logger?: WriteLogger
 ): Promise<void> {
   const cacheDir = getCacheDir()
   const json = JSON.stringify(data, null, 2)
+  const providerCount = Object.keys(data.providers).length
 
   try {
     await ensureDir(cacheDir)
 
     // Write latest.json
-    await fs.writeFile(getLatestPath(), json, 'utf8')
+    const latestPath = getLatestPath()
+    await fs.writeFile(latestPath, json, 'utf8')
 
     // Write timestamped snapshot
     const tsPath = getTimestampPath()
     await fs.writeFile(tsPath, json, 'utf8')
 
-    logger?.debug('Wrote discovery cache', {
-      providers: Object.keys(data.providers).length,
-    })
+    logger?.info(`Cache written: ${providerCount} providers to ${cacheDir}`)
 
     // Rotate old files
     await rotateCache(logger)
   } catch (err: any) {
-    logger?.debug('Failed to write cache', { error: err.message })
+    logger?.error(`Cache write FAILED: ${err.message}`, { cacheDir, providerCount })
   }
 }
 
@@ -133,7 +135,7 @@ export async function writeCache(
  * - Never delete an older file if its size > the newest file (corruption indicator)
  * - Never delete latest.json
  */
-async function rotateCache(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<void> {
+async function rotateCache(logger?: WriteLogger): Promise<void> {
   const cacheDir = getCacheDir()
 
   try {
@@ -205,7 +207,7 @@ export interface ThrottleResult {
   forced: boolean
 }
 
-export async function checkThrottle(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<ThrottleResult> {
+export async function checkThrottle(logger?: WriteLogger): Promise<ThrottleResult> {
   const forced = process.env.MODELS_DISCOVERY_FORCE === '1'
   const intervalMs = parseInt(process.env.MODELS_DISCOVERY_INTERVAL_MS || '', 10) || DEFAULT_INTERVAL_MS
 
@@ -234,13 +236,13 @@ export async function checkThrottle(logger?: { debug: (msg: string, ctx?: any) =
   return { shouldSkip: false, lastRunMs: null, intervalMs, forced: false }
 }
 
-export async function setLastRunTimestamp(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<void> {
+export async function setLastRunTimestamp(logger?: WriteLogger): Promise<void> {
   try {
     await ensureDir(getCacheDir())
     const json = JSON.stringify({ lastRun: Date.now() })
     await fs.writeFile(getLastRunPath(), json, 'utf8')
-    logger?.debug('Updated discovery last-run timestamp')
+    logger?.info(`Last-run timestamp written: ${getLastRunPath()}`)
   } catch (err: any) {
-    logger?.debug('Failed to write throttle file', { error: err.message })
+    logger?.error(`Last-run timestamp FAILED: ${err.message}`)
   }
 }

@@ -206,6 +206,8 @@ export async function enhanceConfig(
 ): Promise<void> {
   try {
     const providers = config.provider || {}
+    const providerCount = Object.keys(providers).length
+    console.log(`[models-discovery] enhanceConfig called: ${providerCount} providers in config`)
     const providerFilter = getProviderFilter(pluginConfig)
     const modelRegexFilter = getModelRegexFilter(pluginConfig, logger.child({ category: 'filtering' }))
     const discoveryConfig = getDiscoveryConfig(pluginConfig)
@@ -218,6 +220,7 @@ export async function enhanceConfig(
     // ponytail: throttle — seed from cache only if last run was < interval ago.
     // MODELS_DISCOVERY_FORCE=1 bypasses. MODELS_DISCOVERY_INTERVAL_MS overrides (default 24h).
     const throttle = await checkThrottle(logger)
+    console.log(`[models-discovery] Throttle check: shouldSkip=${throttle.shouldSkip}, forced=${throttle.forced}, lastRunMs=${throttle.lastRunMs}`)
     if (throttle.shouldSkip && Object.keys(cache.providers).length > 0) {
       logger.info(`Discovery throttled (last run ${throttle.lastRunMs ? Math.round((Date.now() - throttle.lastRunMs) / 1000) : '?'}s ago). Seeding ${Object.keys(cache.providers).length} providers from cache.`)
       let totalSeeded = 0
@@ -239,6 +242,7 @@ export async function enhanceConfig(
         }
       }
       logger.info(`Throttled seed complete: ${totalSeeded} models from cache`)
+      console.log(`[models-discovery] Throttled: seeded ${totalSeeded} models from cache`)
       return
     }
 
@@ -278,9 +282,11 @@ export async function enhanceConfig(
     }
 
     if (jobs.length === 0) {
+      console.log('[models-discovery] No eligible providers found for discovery')
       return
     }
 
+    console.log(`[models-discovery] Starting discovery for ${jobs.length} providers`)
     logger.info(`Starting model discovery for ${jobs.length} providers (parallel, concurrency=${PARALLEL_CONCURRENCY})`)
 
     // Phase 2: Parallel discovery
@@ -373,7 +379,9 @@ export async function enhanceConfig(
     }
 
     // Phase 4: Write cache
-    if (Object.keys(cacheUpdates.providers).length > 0) {
+    const cacheUpdateCount = Object.keys(cacheUpdates.providers).length
+    console.log(`[models-discovery] Phase 4: ${cacheUpdateCount} providers to cache`)
+    if (cacheUpdateCount > 0) {
       // Merge with existing cache (preserve entries for providers not in this run)
       for (const [k, v] of Object.entries(cache.providers)) {
         if (!cacheUpdates.providers[k]) {

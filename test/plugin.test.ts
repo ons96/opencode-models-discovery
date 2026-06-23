@@ -19,6 +19,7 @@ describe('ModelDiscovery Plugin', () => {
 
   beforeEach(async () => {
     mockFetch.mockClear()
+    process.env.MODELS_DISCOVERY_FORCE = '1' // bypass throttle in tests
     delete process.env.OPENCODE_AUTH_CONTENT
     delete process.env.OPENCODE
     delete process.env.OPENCODE_PID
@@ -56,6 +57,7 @@ describe('ModelDiscovery Plugin', () => {
   })
 
   afterEach(() => {
+    delete process.env.MODELS_DISCOVERY_FORCE
     delete process.env.OPENCODE_AUTH_CONTENT
     delete process.env.OPENCODE
     delete process.env.OPENCODE_PID

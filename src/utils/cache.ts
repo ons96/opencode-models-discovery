@@ -183,3 +183,62 @@ export function isCacheFresh(entry: CacheEntry, maxAgeMs = 0): boolean {
   if (maxAgeMs === 0) return true // never expire
   return Date.now() - entry.timestamp < maxAgeMs
 }
+
+// ponytail: throttle — skip discovery if last successful run was recent.
+// Stores a tiny last-run.json alongside the cache. Env vars:
+//   MODELS_DISCOVERY_FORCE=1     — bypass throttle (force discovery)
+//   MODELS_DISCOVERY_INTERVAL_MS — custom interval (default 86400000 = 24h)
+
+const LAST_RUN_FILENAME = 'last-run.json'
+const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
+
+function getLastRunPath(): string {
+  return path.join(getCacheDir(), LAST_RUN_FILENAME)
+}
+
+export interface ThrottleResult {
+  shouldSkip: boolean
+  lastRunMs: number | null
+  intervalMs: number
+  forced: boolean
+}
+
+export async function checkThrottle(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<ThrottleResult> {
+  const forced = process.env.MODELS_DISCOVERY_FORCE === '1'
+  const intervalMs = parseInt(process.env.MODELS_DISCOVERY_INTERVAL_MS || '', 10) || DEFAULT_INTERVAL_MS
+
+  if (forced) {
+    logger?.debug('Discovery throttle bypassed (MODELS_DISCOVERY_FORCE=1)')
+    return { shouldSkip: false, lastRunMs: null, intervalMs, forced: true }
+  }
+
+  try {
+    const raw = await fs.readFile(getLastRunPath(), 'utf8')
+    const data = JSON.parse(raw)
+    const lastRunMs = data.lastRun
+    if (typeof lastRunMs === 'number') {
+      const elapsed = Date.now() - lastRunMs
+      if (elapsed < intervalMs) {
+        logger?.debug(`Discovery throttled: last run ${Math.round(elapsed / 1000)}s ago, interval ${Math.round(intervalMs / 1000)}s`)
+        return { shouldSkip: true, lastRunMs, intervalMs, forced: false }
+      }
+    }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') {
+      logger?.debug('Failed to read throttle file', { error: err.message })
+    }
+  }
+
+  return { shouldSkip: false, lastRunMs: null, intervalMs, forced: false }
+}
+
+export async function setLastRunTimestamp(logger?: { debug: (msg: string, ctx?: any) => void }): Promise<void> {
+  try {
+    await ensureDir(getCacheDir())
+    const json = JSON.stringify({ lastRun: Date.now() })
+    await fs.writeFile(getLastRunPath(), json, 'utf8')
+    logger?.debug('Updated discovery last-run timestamp')
+  } catch (err: any) {
+    logger?.debug('Failed to write throttle file', { error: err.message })
+  }
+}

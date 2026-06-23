@@ -6,7 +6,7 @@ import { categorizeModel, formatModelName, extractModelOwner } from '../utils'
 import { normalizeBaseURL, discoverModelsFromProvider, discoverModelInfoFromProvider, autoDetectOpenAICompatibleProvider } from '../utils/openai-compatible-api'
 import { createModelInfoEnricher, isSupportedModelInfoFormat, type ModelInfoEnricher } from '../utils/model-info'
 import { getProviderFilter, getDiscoveryConfig, getModelRegexFilter, getProviderModelRegexFilter, shouldDiscoverModel, shouldDiscoverProviderWithOverride } from '../types/plugin-config'
-import { readCache, writeCache, type CacheData } from '../utils/cache'
+import { readCache, writeCache, checkThrottle, setLastRunTimestamp, type CacheData } from '../utils/cache'
 import type { PluginLogger } from './logger'
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { OpenAIModel } from '../types'
@@ -215,6 +215,33 @@ export async function enhanceConfig(
     // Load cache for fallback seeding
     const cache = await readCache(logger)
 
+    // ponytail: throttle — seed from cache only if last run was < interval ago.
+    // MODELS_DISCOVERY_FORCE=1 bypasses. MODELS_DISCOVERY_INTERVAL_MS overrides (default 24h).
+    const throttle = await checkThrottle(logger)
+    if (throttle.shouldSkip && Object.keys(cache.providers).length > 0) {
+      logger.info(`Discovery throttled (last run ${throttle.lastRunMs ? Math.round((Date.now() - throttle.lastRunMs) / 1000) : '?'}s ago). Seeding ${Object.keys(cache.providers).length} providers from cache.`)
+      let totalSeeded = 0
+      for (const [providerName, providerConfig] of Object.entries(providers)) {
+        const p = providerConfig as any
+        const cached = cache.providers[providerName]
+        if (!cached?.models || !p.options?.baseURL) continue
+        const existingModels = p.models || {}
+        let seeded = 0
+        for (const [k, v] of Object.entries(cached.models)) {
+          if (!existingModels[k]) {
+            existingModels[k] = v
+            seeded++
+          }
+        }
+        if (seeded > 0) {
+          p.models = existingModels
+          totalSeeded += seeded
+        }
+      }
+      logger.info(`Throttled seed complete: ${totalSeeded} models from cache`)
+      return
+    }
+
     // Phase 1: Collect eligible providers into jobs
     const jobs: ProviderJob[] = []
     for (const [providerName, providerConfig] of Object.entries(providers)) {
@@ -354,6 +381,8 @@ export async function enhanceConfig(
         }
       }
       await writeCache(cacheUpdates, logger)
+      // Record successful run timestamp for throttle
+      await setLastRunTimestamp(logger)
     }
 
     if (openAICompatibleProviders.length > 0) {

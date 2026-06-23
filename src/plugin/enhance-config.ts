@@ -236,8 +236,13 @@ export async function enhanceConfig(
             seeded++
           }
         }
-        if (seeded > 0) {
+        if (seeded > 0 && !p.models) {
+          // ponytail: only assign if there was no models object before, to avoid
+          // replacing the live config reference (which OpenCode TUI subscribes to).
           p.models = existingModels
+          totalSeeded += seeded
+        } else if (seeded > 0) {
+          // already had models — they were mutated in place
           totalSeeded += seeded
         }
       }
@@ -362,9 +367,16 @@ export async function enhanceConfig(
       if (models && Object.keys(models).length > 0) {
         // API succeeded with new models
         const p = providers[name]
-        p.models = { ...existingModels, ...models }
-        openAICompatibleProviders.push({ name, baseURL, models })
-        cacheUpdates.providers[name] = { baseURL, models: p.models, timestamp: Date.now() }
+        // ponytail: mutate p.models in-place to avoid swapping the reference,
+        // which would force OpenCode's TUI to re-render the entire picker on every change.
+        if (!p.models) p.models = {}
+        for (const [k, v] of Object.entries(models)) {
+          p.models[k] = v
+        }
+        // Reuse the merged map for cache (so the cache matches the live config exactly)
+        const merged = p.models
+        openAICompatibleProviders.push({ name, baseURL, models: merged })
+        cacheUpdates.providers[name] = { baseURL, models: merged, timestamp: Date.now() }
       } else if (models === null) {
         // API failed — cache was already seeded into existingModels
         cacheUpdates.providers[name] = { baseURL, models: existingModels, timestamp: Date.now() }

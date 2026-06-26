@@ -1395,6 +1395,122 @@ describe('ModelDiscovery Plugin', () => {
       expect(config.provider.ollama.models['qwen/qwen3-8b']).toBeDefined()
       expect(config.provider.ollama.models['bge-m3']).toBeUndefined()
     })
+
+    // ponytail/issue-242: Phase 3 merge must re-apply provider-level excludeRegex
+    // so a probe that returns models the user has trimmed out cannot re-add them.
+    it('should not re-add models excluded by excludeRegex at Phase 3 merge (issue #242)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'bge-m3', object: 'model', created: 1234567890, owned_by: 'local' },
+            { id: 'keep-me-1', object: 'model', created: 1234567890, owned_by: 'local' },
+            { id: 'keep-me-2', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const mockInput: any = {
+        client: mockClient,
+        project: {
+          id: 'test-project',
+          name: 'test',
+          path: '/tmp',
+          worktree: '',
+          time: { created: Date.now() }
+        },
+        directory: '/tmp',
+        worktree: '',
+        $: vi.fn()
+      }
+
+      const hooksWithConfig = await ModelDiscoveryPlugin(mockInput, {})
+
+      // Provider has 2 models — provider-level excludeRegex blocks `^bge-` ids.
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Ollama',
+            options: {
+              baseURL: 'http://127.0.0.1:11434/v1',
+              modelsDiscovery: {
+                models: {
+                  excludeRegex: ['^bge-']
+                }
+              }
+            },
+            models: {
+              'keep-me-1': { name: 'Keep Me 1' }
+            }
+          }
+        }
+      }
+
+      await hooksWithConfig.config(config)
+
+      // Allowed models survive, excluded model never returns (Phase 2 + Phase 3).
+      expect(config.provider.ollama.models['keep-me-1']).toBeDefined()
+      expect(config.provider.ollama.models['keep-me-2']).toBeDefined()
+      expect(config.provider.ollama.models['bge-m3']).toBeUndefined()
+    })
+
+    // ponytail/issue-242: `preserve` lists model IDs the plugin must always
+    // keep in the live config even when the probe does not return them.
+    it('should honor modelsDiscovery.preserve and keep pinned ids on re-probe (issue #242)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'fresh-discovered', object: 'model', created: 1234567890, owned_by: 'local' }
+          ]
+        })
+      })
+
+      const mockInput: any = {
+        client: mockClient,
+        project: {
+          id: 'test-project',
+          name: 'test',
+          path: '/tmp',
+          worktree: '',
+          time: { created: Date.now() }
+        },
+        directory: '/tmp',
+        worktree: '',
+        $: vi.fn()
+      }
+
+      const hooksWithConfig = await ModelDiscoveryPlugin(mockInput, {})
+
+      // live config has the pinned model already; probe returns a different
+      // one (i.e. upstream does not list the pinned model). The plugin MUST
+      // not destroy the existing pinned entry.
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Ollama',
+            options: {
+              baseURL: 'http://127.0.0.1:11434/v1',
+              modelsDiscovery: {
+                preserve: ['minimaxai/minimax-m3']
+              }
+            },
+            models: {
+              'minimaxai/minimax-m3': { name: 'Minimax M3' }
+            }
+          }
+        }
+      }
+
+      await hooksWithConfig.config(config)
+
+      // The pinned model survives; the freshly-discovered one is added.
+      expect(config.provider.ollama.models['minimaxai/minimax-m3']).toBeDefined()
+      expect(config.provider.ollama.models['minimaxai/minimax-m3'].name).toBe('Minimax M3')
+      expect(config.provider.ollama.models['fresh-discovered']).toBeDefined()
+    })
   })
 
   describe('Event Hook', () => {

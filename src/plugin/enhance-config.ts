@@ -228,10 +228,22 @@ export async function enhanceConfig(
         const p = providerConfig as any
         const cached = cache.providers[providerName]
         if (!cached?.models || !p.options?.baseURL) continue
+        const providerDiscoveryConfig = p.options?.modelsDiscovery ?? {}
+        const hasProviderDiscoveryFilter =
+          providerDiscoveryConfig.models?.includeRegex?.length || providerDiscoveryConfig.models?.excludeRegex?.length
+        const throttledFilter = hasProviderDiscoveryFilter
+          ? getProviderModelRegexFilter(providerDiscoveryConfig, logger.child({ category: 'filtering' }))
+          : null
         const existingModels = p.models || {}
         let seeded = 0
         for (const [k, v] of Object.entries(cached.models)) {
           if (!existingModels[k]) {
+            // ponytail/issue-242: re-apply provider regex filter on cached seeds,
+            // otherwise a previous (un-filtered) cache write can re-introduce
+            // models the user trimmed out.
+            if (throttledFilter && !shouldDiscoverModel(k, throttledFilter)) {
+              continue
+            }
             existingModels[k] = v
             seeded++
           }
@@ -367,11 +379,44 @@ export async function enhanceConfig(
       if (models && Object.keys(models).length > 0) {
         // API succeeded with new models
         const p = providers[name]
+        const providerDiscoveryConfig = p?.options?.modelsDiscovery ?? {}
+        const preserveSet = new Set<string>(providerDiscoveryConfig.preserve ?? [])
+        const mergeRegexConfig =
+          providerDiscoveryConfig.models?.includeRegex?.length || providerDiscoveryConfig.models?.excludeRegex?.length
+            ? providerDiscoveryConfig.models
+            : null
+        const mergeFilter = mergeRegexConfig
+          ? getProviderModelRegexFilter(providerDiscoveryConfig, logger.child({ category: 'filtering' }))
+          : null
+        // ponytail/issue-242: re-apply provider-level regex filter at merge time
+        // so trimmed-out model ids can never come back through a probe. The
+        // Phase 2 filter does the same thing for new ids — this guards against
+        // later phases that may bypass the original filter (e.g. when this
+        // config was edited between runs by trim_opencode_models.py).
+        let skippedByFilter = 0
         // ponytail: mutate p.models in-place to avoid swapping the reference,
         // which would force OpenCode's TUI to re-render the entire picker on every change.
         if (!p.models) p.models = {}
         for (const [k, v] of Object.entries(models)) {
+          if (mergeFilter && !shouldDiscoverModel(k, mergeFilter)) {
+            skippedByFilter++
+            continue
+          }
           p.models[k] = v
+        }
+        // ponytail/issue-242: re-add anything in `preserve` that the probe
+        // did not return but the live config still needs (defensive — Phase 2
+        // already short-circuits on existingModels[model.id], but this guards
+        // against future mutations).
+        if (preserveSet.size > 0) {
+          for (const id of preserveSet) {
+            if (!p.models[id] && existingModels[id]) {
+              p.models[id] = existingModels[id]
+            }
+          }
+        }
+        if (skippedByFilter > 0) {
+          logger.debug(`Phase 3 filter: skipped ${skippedByFilter} model(s) for ${name} via modelsDiscovery.models.*Regex`)
         }
         // Reuse the merged map for cache (so the cache matches the live config exactly)
         const merged = p.models

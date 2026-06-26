@@ -27,6 +27,12 @@ export interface ProviderDiscoveryConfig {
     includeRegex?: string[]
     excludeRegex?: string[]
   }
+  // ponytail/issue-242: model IDs that the plugin must NEVER add (re-probe)
+  // and MUST always keep if already present in the live config. Useful for
+  // pinning models that the upstream provider does not list in /v1/models
+  // (e.g. hosted via direct account relationship) or for honoring
+  // trim_opencode_models.py curated keep-lists after a future probe.
+  preserve?: string[]
   smartModelName?: boolean
 }
 

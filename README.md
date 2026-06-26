@@ -17,6 +17,7 @@ Originally inspired by [opencode-lmstudio](https://github.com/nicktasios/opencod
 - Injects discovered models into OpenCode provider config automatically
 - Supports provider-level include, exclude, and endpoint overrides
 - Supports regex-based model filtering
+- **Honors trimmed / curated keep-lists**: models trimmed out via `includeRegex` / `excludeRegex` / `preserve` will NEVER re-appear after a probe (#242)
 - Can enrich model limits and reasoning metadata from provider-specific endpoints
 - Supports OpenCode `/connect` credentials for custom providers
 
@@ -98,6 +99,35 @@ This keeps the same provider configuration model while allowing the plugin to wo
 - OpenCode with plugin support
 - At least one OpenAI-compatible provider running locally or remotely
 - Provider API accessible through either a `/v1`-style base URL or an explicitly configured discovery endpoint
+
+## Trimming & keep-lists (issue #242)
+
+If you curate your provider model list with a tool like `trim_opencode_models.py`, you don't want the plugin re-injecting excluded models on its next probe. Use **any** of these mechanisms per-provider:
+
+```jsonc
+"provider": {
+  "koyeb": {
+    "options": {
+      "modelsDiscovery": {
+        "models": {
+          "includeRegex": ["^koyeb/(gpt-oss|gpt-5|claude).*"],   // ADD-only these
+          "excludeRegex": ["^koyeb/(embedding|tts).*"]           // exclude these
+        },
+        "preserve": ["koyeb/my-pinned-model"]                     // must stay; never auto-re-add
+      }
+    }
+  }
+}
+```
+
+Rules:
+
+1. `includeRegex` is whitelist — any model id NOT matching is dropped from probe results.
+2. `excludeRegex` is blacklist — any model id matching is dropped.
+3. `preserve` is a pin list — always kept when present in live config; never re-added by probe (defensive).
+4. Filters apply at discovery (Phase 2) AND at merge (Phase 3), so they survive future probes.
+
+See `docs/configuration.md` for the full schema.
 
 ## Logging
 

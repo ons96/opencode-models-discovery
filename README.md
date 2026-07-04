@@ -129,6 +129,40 @@ Rules:
 
 See `docs/configuration.md` for the full schema.
 
+## Benchmark keep-list (issue #241)
+
+Opt-in: fetch [llm-stats.com](https://llm-stats.com) top-N models per category once per day and tag any discovered model that matches a top slug with a `tier` field. Default **OFF** — no external fetch unless you configure at least one entry.
+
+```jsonc
+{
+  "discovery": {
+    "benchmarks": [
+      { "source": "llm-stats", "category": "coding",    "limit": 50 },
+      { "source": "llm-stats", "category": "reasoning", "limit": 50 },
+      { "source": "llm-stats", "category": "research",  "limit": 50 }
+    ]
+  }
+}
+```
+
+What happens when enabled:
+1. The plugin fetches `https://llm-stats.com` (homepage HTML, browser UA, 8s timeout) and parses the Next.js RSC streaming payload for the ranked model list. No API key needed; no JS execution.
+2. Top-N `model_id` slugs per category are cached at `~/.cache/opencode/models-discovery/top-<category>.json` with schema `{ fetched_at, source, category, slugs: [] }`. Cache TTL is 24h; bypass with `MODELS_DISCOVERY_FORCE=1`.
+3. During model discovery, any discovered model whose **basename** (id after the last `/`) matches a cached slug gets `tier: "<category>"` (e.g. `tier: "coding"`) on its model config entry.
+
+Category → score mapping:
+- `coding` — `arena_scores["coding-arena"]` (TrueSkill), falls back to `swe_bench_verified_score`
+- `reasoning` — `gpqa_score` (GPQA Diamond)
+- `research` — `hle_score` (Humanity's Last Exam)
+
+Matching uses the basename so slash-namespaced provider ids (e.g. `nvidia/anthropic/claude-fable-5`) reconcile to llm-stats slugs (`claude-fable-5`). If two providers host the same canonical model, both get tagged — that's correct. The fetch is best-effort: if llm-stats.com is unreachable or the payload changes shape, the plugin logs a debug message and continues without tier tags (no crash, no cache overwrite).
+
+Audit cached keep-lists:
+```bash
+ls ~/.cache/opencode/models-discovery/top-*.json
+cat ~/.cache/opencode/models-discovery/top-coding.json
+```
+
 ## Logging
 
 When available, the plugin writes logs through OpenCode's structured server log API via `client.app.log(...)` using the service name `opencode-models-discovery`.

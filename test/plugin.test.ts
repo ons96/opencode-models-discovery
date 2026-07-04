@@ -1633,5 +1633,67 @@ describe('ModelDiscovery Plugin', () => {
 
       expect(config.provider.ollama.models['anthropic-compatible-model']).toBeDefined()
     })
+
+    it('should cache failure diagnostics (error + httpStatus) when API probe returns HTTP error', async () => {
+      // ponytail/issue-240: failed probes must still write a cache entry with
+      // error/httpStatus so failures are auditable over time.
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({})
+      })
+
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Ollama',
+            options: { baseURL: 'http://127.0.0.1:11434/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      // Provider stays in cache with failure diagnostics
+      const latestPath = path.join(TEST_CACHE_DIR, 'opencode/models-discovery/latest.json')
+      const raw = await fs.readFile(latestPath, 'utf8')
+      const cache = JSON.parse(raw)
+      const entry = cache.providers?.ollama
+      expect(entry).toBeDefined()
+      expect(entry.error).toBe('http_503')
+      expect(entry.httpStatus).toBe(503)
+      // normalizeBaseURL strips the /v1 suffix before probing + caching.
+      expect(entry.baseURL).toBe('http://127.0.0.1:11434')
+      expect(typeof entry.timestamp).toBe('number')
+    })
+
+    it('should cache failure diagnostics when API probe hits a network error (httpStatus=0)', async () => {
+      // fetch rejects -> fetchJson returns status 0 -> http.get fallback also
+      // fails (ECONNREFUSED) -> httpStatus=0, error='network_error'.
+      mockFetch.mockRejectedValue(new Error('Connection refused'))
+
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Ollama',
+            options: { baseURL: 'http://127.0.0.1:11434/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      const latestPath = path.join(TEST_CACHE_DIR, 'opencode/models-discovery/latest.json')
+      const raw = await fs.readFile(latestPath, 'utf8')
+      const cache = JSON.parse(raw)
+      const entry = cache.providers?.ollama
+      expect(entry).toBeDefined()
+      expect(entry.error).toBe('network_error')
+      expect(entry.httpStatus).toBe(0)
+    })
   })
 })

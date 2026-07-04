@@ -10,6 +10,11 @@ const REQUEST_TIMEOUT_MS = 3000
 export interface ModelsDiscoveryResult {
   ok: boolean
   models: OpenAIModel[]
+  // ponytail/issue-240: surfaced on failure so the cache can record why a
+  // provider went missing. httpStatus=0 means a network/transport error
+  // (no HTTP response received); error is a short human-readable label.
+  error?: string
+  httpStatus?: number
 }
 
 export interface ModelInfoDiscoveryResult {
@@ -30,31 +35,44 @@ export function buildAPIURL(baseURL: string, endpoint: string = OPENAI_COMPATIBL
   return `${normalized}${endpoint}`
 }
 
-async function fetchJson<T>(url: string, headers: Record<string, string>): Promise<T | undefined> {
-  const response = await fetch(url, {
-    method: "GET",
-    headers,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+// ponytail/issue-240: helpers return { status, data } so the caller can
+// record an httpStatus + a short error label on failure (for cache entries).
+// status=0 means a network/transport error (fetch threw or no response).
+interface FetchResult<T> {
+  status: number
+  data: T | undefined
+}
 
-  if (!response.ok) {
-    return undefined
-  }
-
+async function fetchJson<T>(url: string, headers: Record<string, string>): Promise<FetchResult<T>> {
   try {
-    return await response.json() as T
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      return { status: response.status, data: undefined }
+    }
+
+    try {
+      return { status: response.status, data: await response.json() as T }
+    } catch {
+      return { status: response.status, data: undefined }
+    }
   } catch {
-    return undefined
+    // fetch threw (timeout, DNS, connection refused) — no HTTP response.
+    return { status: 0, data: undefined }
   }
 }
 
-function fetchJsonViaHttpModule<T>(urlStr: string, headers: Record<string, string>): Promise<T | undefined> {
+function fetchJsonViaHttpModule<T>(urlStr: string, headers: Record<string, string>): Promise<FetchResult<T>> {
   return new Promise((resolve) => {
     let settled = false
-    const finish = (data: T | undefined) => {
+    const finish = (result: FetchResult<T>) => {
       if (!settled) {
         settled = true
-        resolve(data)
+        resolve(result)
       }
     }
 
@@ -67,23 +85,23 @@ function fetchJsonViaHttpModule<T>(urlStr: string, headers: Record<string, strin
       res.on('data', (chunk: string) => data += chunk)
       res.on('end', () => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          finish(undefined)
+          finish({ status: res.statusCode || 0, data: undefined })
           return
         }
 
         try {
-          finish(JSON.parse(data) as T)
+          finish({ status: res.statusCode, data: JSON.parse(data) as T })
         } catch {
-          finish(undefined)
+          finish({ status: res.statusCode, data: undefined })
         }
       })
-      res.on('error', () => finish(undefined))
+      res.on('error', () => finish({ status: 0, data: undefined }))
     })
 
-    req.on('error', () => finish(undefined))
+    req.on('error', () => finish({ status: 0, data: undefined }))
     req.on('timeout', () => {
       req.destroy()
-      finish(undefined)
+      finish({ status: 0, data: undefined })
     })
   })
 }
@@ -101,12 +119,22 @@ export async function discoverModelsFromProvider(
     headers["Authorization"] = `Bearer ${apiKey}`
   }
 
-  try {
-    const data = await fetchJson<OpenAIModelsResponse>(url, headers)
-    return data ? { ok: true, models: data.data ?? [] } : { ok: false, models: [] }
-  } catch {
-    const data = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
-    return data ? { ok: true, models: data.data ?? [] } : { ok: false, models: [] }
+  // ponytail/issue-240: try fetch first, fall back to node:http on throw.
+  // Surface httpStatus + a short error label on failure so the plugin cache
+  // can record why a provider went missing (status 0 = transport error).
+  let result = await fetchJson<OpenAIModelsResponse>(url, headers)
+  if (result.status === 0) {
+    result = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
+  }
+
+  if (result.data) {
+    return { ok: true, models: result.data.data ?? [] }
+  }
+  return {
+    ok: false,
+    models: [],
+    httpStatus: result.status,
+    error: result.status === 0 ? 'network_error' : `http_${result.status}`,
   }
 }
 
@@ -123,26 +151,25 @@ export async function discoverModelInfoFromProvider(
     headers["Authorization"] = `Bearer ${apiKey}`
   }
 
-  try {
-    const data = await fetchJson<unknown>(url, headers)
-    return data !== undefined ? { ok: true, data } : { ok: false, data: undefined }
-  } catch {
-    const data = await fetchJsonViaHttpModule<unknown>(url, headers)
-    return data !== undefined ? { ok: true, data } : { ok: false, data: undefined }
+  let result = await fetchJson<unknown>(url, headers)
+  if (result.status === 0) {
+    result = await fetchJsonViaHttpModule<unknown>(url, headers)
   }
+
+  return result.data !== undefined
+    ? { ok: true, data: result.data }
+    : { ok: false, data: undefined }
 }
 
 export async function fetchModelsDirect(baseURL: string, endpoint: string = OPENAI_COMPATIBLE_MODELS_ENDPOINT): Promise<string[]> {
   const url = buildAPIURL(baseURL, endpoint)
   const headers = { "Content-Type": "application/json" }
 
-  try {
-    const data = await fetchJson<OpenAIModelsResponse>(url, headers)
-    return data?.data?.map(model => model.id) || []
-  } catch {
-    const data = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
-    return data?.data?.map(model => model.id) || []
+  let result = await fetchJson<OpenAIModelsResponse>(url, headers)
+  if (result.status === 0) {
+    result = await fetchJsonViaHttpModule<OpenAIModelsResponse>(url, headers)
   }
+  return result.data?.data?.map(model => model.id) || []
 }
 
 export async function autoDetectOpenAICompatibleProvider(): Promise<{ name: string; baseURL: string } | null> {

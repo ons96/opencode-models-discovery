@@ -1695,5 +1695,85 @@ describe('ModelDiscovery Plugin', () => {
       expect(entry.error).toBe('network_error')
       expect(entry.httpStatus).toBe(0)
     })
+
+    it('should NOT fetch llm-stats.com when no benchmarks configured (issue #241 default-OFF)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'test-model', object: 'model', created: 1234567890, owned_by: 'local' }] }),
+      })
+
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Ollama',
+            options: { baseURL: 'http://127.0.0.1:11434/v1' },
+            models: {}
+          }
+        }
+      }
+
+      await pluginHooks.config(config)
+
+      // Only the provider probe fetch should have happened - no llm-stats.com call.
+      const urls = mockFetch.mock.calls.map((c: any[]) => c[0])
+      expect(urls.some((u: string) => u.includes('llm-stats.com'))).toBe(false)
+    })
+
+    it('should tag discovered models with tier from benchmark keep-list (issue #241)', async () => {
+      // URL-aware mock: llm-stats.com -> HTML with RSC payload; provider probe -> JSON.
+      // Fixture contains claude-fable-5 as top coding slug; provider returns it.
+      const fixtureModel = JSON.stringify({
+        model_id: 'claude-fable-5', name: 'Claude Fable 5', gpqa_score: 0.669,
+        swe_bench_verified_score: 0.95, arena_scores: { 'coding-arena': 21.5 },
+      }).replace(/"/g, '\\"')
+      const llmStatsHTML = `<html><script>self.__next_f.push([1,"${fixtureModel}"])</script></html>`
+
+      mockFetch.mockImplementation((url: string) => {
+        if (typeof url === 'string' && url.includes('llm-stats.com')) {
+          return Promise.resolve({ ok: true, text: async () => llmStatsHTML, json: async () => ({}) })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ data: [
+            { id: 'claude-fable-5', object: 'model', created: 1234567890, owned_by: 'anthropic' },
+            { id: 'unranked-model', object: 'model', created: 1234567890, owned_by: 'local' },
+          ] }),
+        })
+      })
+
+      // Re-init plugin WITH benchmarks config (beforeEach built it without).
+      const benchInput: any = {
+        client: mockClient,
+        project: { id: 'test-project', name: 'test', path: '/tmp', worktree: '', time: { created: Date.now() } },
+        directory: '/tmp', worktree: '', $: vi.fn(), config: {},
+      }
+      const benchHooks = await ModelDiscoveryPlugin(benchInput, {
+        discovery: { benchmarks: [{ source: 'llm-stats', category: 'coding', limit: 10 }] },
+      })
+
+      const config: any = {
+        provider: {
+          ollama: {
+            npm: '@ai-sdk/openai-compatible', name: 'Ollama',
+            options: { baseURL: 'http://127.0.0.1:11434/v1' }, models: {},
+          },
+        },
+      }
+      await benchHooks.config(config)
+
+      // claude-fable-5 matches the top coding slug -> tier:'coding'
+      expect(config.provider.ollama.models['claude-fable-5'].tier).toBe('coding')
+      // unranked-model has no tier
+      expect(config.provider.ollama.models['unranked-model'].tier).toBeUndefined()
+
+      // Cache file written for top-coding
+      const topPath = path.join(TEST_CACHE_DIR, 'opencode/models-discovery/top-coding.json')
+      const raw = await fs.readFile(topPath, 'utf8')
+      const cache = JSON.parse(raw)
+      expect(cache.source).toBe('llm-stats')
+      expect(cache.category).toBe('coding')
+      expect(cache.slugs).toContain('claude-fable-5')
+    })
   })
 })

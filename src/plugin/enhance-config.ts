@@ -5,8 +5,9 @@ import { ToastNotifier } from '../ui/toast-notifier'
 import { categorizeModel, formatModelName, extractModelOwner } from '../utils'
 import { normalizeBaseURL, discoverModelsFromProvider, discoverModelInfoFromProvider, autoDetectOpenAICompatibleProvider } from '../utils/openai-compatible-api'
 import { createModelInfoEnricher, isSupportedModelInfoFormat, type ModelInfoEnricher } from '../utils/model-info'
-import { getProviderFilter, getDiscoveryConfig, getModelRegexFilter, getProviderModelRegexFilter, shouldDiscoverModel, shouldDiscoverProviderWithOverride } from '../types/plugin-config'
+import { getProviderFilter, getDiscoveryConfig, getBenchmarkConfigs, getModelRegexFilter, getProviderModelRegexFilter, shouldDiscoverModel, shouldDiscoverProviderWithOverride } from '../types/plugin-config'
 import { readCache, writeCache, checkThrottle, setLastRunTimestamp, type CacheData } from '../utils/cache'
+import { refreshTopModels, type LeaderboardCategory } from '../utils/leaderboard-fetcher'
 import type { PluginLogger } from './logger'
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { OpenAIModel } from '../types'
@@ -305,6 +306,36 @@ export async function enhanceConfig(
 
     logger.info(`Starting model discovery for ${jobs.length} providers (parallel, concurrency=${PARALLEL_CONCURRENCY})`)
 
+    // ponytail/issue-241: opt-in benchmark keep-list. Fetch llm-stats.com
+    // top-N per configured category (24h cache, bypassed by MODELS_DISCOVERY_FORCE=1)
+    // and build a tier map: model basename -> category. Phase 2 tags any
+    // discovered model whose basename matches a top slug with `tier: <category>`.
+    // Default OFF — no external fetch unless discovery.benchmarks is configured.
+    const benchmarkConfigs = getBenchmarkConfigs(pluginConfig)
+    // ponytail: basename = id after the last '/'. llm-stats slugs are dash-
+    // separated canonical names (e.g. 'claude-fable-5'); provider ids are
+    // slash-namespaced (e.g. 'nvidia/anthropic/claude-fable-5'). Matching on
+    // the basename reconciles the two namespaces. Ceiling: two different
+    // providers hosting the same canonical model both get tagged — that's
+    // correct (both ARE top-tier). Upgrade path: weight by provider if needed.
+    const tierMap = new Map<string, LeaderboardCategory>()
+    if (benchmarkConfigs.length > 0) {
+      for (const cfg of benchmarkConfigs) {
+        try {
+          const entry = await refreshTopModels(cfg.category, cfg.limit, logger)
+          if (entry?.slugs?.length) {
+            for (const slug of entry.slugs) {
+              // First category to claim a slug wins (precedence = config order).
+              if (!tierMap.has(slug)) tierMap.set(slug, cfg.category)
+            }
+            logger.info(`Benchmark keep-list: ${entry.slugs.length} top-${cfg.category} slugs from ${entry.source}`)
+          }
+        } catch (err: any) {
+          logger.debug(`benchmark fetch failed for ${cfg.category}`, { error: err?.message ?? String(err) })
+        }
+      }
+    }
+
     // Phase 2: Parallel discovery
     const openAICompatibleProviders: DiscoveredProvider[] = []
     const cacheUpdates: CacheData = { version: 1, providers: {} }
@@ -365,6 +396,14 @@ export async function enhanceConfig(
         if (owner) modelConfig.organizationOwner = owner
         if (modelType === 'chat') {
           modelConfig.modalities = { input: ['text', 'image'], output: ['text'] }
+        }
+        // ponytail/issue-241: tag top-tier models from the benchmark keep-list.
+        // Match on basename (id after last '/') so slash-namespaced provider ids
+        // (e.g. 'nvidia/anthropic/claude-fable-5') reconcile to llm-stats slugs.
+        if (tierMap.size > 0) {
+          const basename = model.id.split('/').pop() ?? model.id
+          const tier = tierMap.get(basename)
+          if (tier) modelConfig.tier = tier
         }
         modelInfoEnricher?.applyModelInfo(modelConfig, model.id)
         discoveredModels[model.id] = modelConfig

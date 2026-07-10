@@ -1,3 +1,5 @@
+import type { BenchmarkConfig, LeaderboardCategory } from '../utils/leaderboard-fetcher'
+
 export interface PluginConfig {
   providers?: {
     include?: string[]
@@ -11,6 +13,11 @@ export interface PluginConfig {
     enabled?: boolean
     timeoutMs?: number // ponytail: default 60_000, configurable
     maxAgeMs?: number // ponytail: cache freshness threshold, 0 = never expire (default)
+    // ponytail/issue-241: opt-in external benchmark keep-list. When set, the
+    // plugin fetches llm-stats.com top-N per category (24h cache) and writes
+    // ~/.cache/opencode/models-discovery/top-<category>.json. Default OFF —
+    // no external fetch unless the user configures at least one entry.
+    benchmarks?: BenchmarkConfig[]
   }
   smartModelName?: boolean
 }
@@ -75,6 +82,34 @@ export function getDiscoveryConfig(config: PluginConfig): DiscoveryConfig {
   return {
     enabled: config.discovery?.enabled ?? DEFAULT_DISCOVERY_CONFIG.enabled,
   }
+}
+
+// ponytail/issue-241: validate + normalize the benchmark keep-list config.
+// Returns only well-formed entries (source=llm-stats, known category, limit>0)
+// so enhanceConfig never feeds garbage to the fetcher. Empty array = OFF.
+export function getBenchmarkConfigs(config: PluginConfig): BenchmarkConfig[] {
+  const raw = config.discovery?.benchmarks
+  if (!Array.isArray(raw)) return []
+  const validCategories: LeaderboardCategory[] = ['coding', 'reasoning', 'research']
+  const seen = new Set<string>()
+  const out: BenchmarkConfig[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    if (entry.source !== 'llm-stats') continue
+    if (!validCategories.includes(entry.category)) continue
+    const limit = typeof entry.limit === 'number' && entry.limit > 0 ? entry.limit : undefined
+    // Dedupe by category — last one wins (matches user intent on re-config).
+    const key = entry.category
+    const normalized: BenchmarkConfig = { source: 'llm-stats', category: entry.category, ...(limit ? { limit } : {}) }
+    if (seen.has(key)) {
+      const idx = out.findIndex((e) => e.category === key)
+      if (idx >= 0) out[idx] = normalized
+    } else {
+      seen.add(key)
+      out.push(normalized)
+    }
+  }
+  return out
 }
 
 export function shouldDiscoverProviderWithOverride(

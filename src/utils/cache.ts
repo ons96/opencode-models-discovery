@@ -10,6 +10,12 @@ export interface CacheEntry {
   baseURL: string
   models: Record<string, any>
   timestamp: number // epoch ms
+  // ponytail/issue-240: optional failure diagnostics. Present only when the
+  // provider's probe failed so the cache can record why a provider went
+  // missing (lets us audit failures over time without re-probing).
+  // httpStatus=0 means a network/transport error (no HTTP response received).
+  error?: string
+  httpStatus?: number
 }
 
 export interface CacheData {

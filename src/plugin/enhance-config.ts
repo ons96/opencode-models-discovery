@@ -327,7 +327,9 @@ export async function enhanceConfig(
             for (const k of cachedKeys) existingModels[k] = cached.models[k]
           }
         }
-        return { name: providerName, baseURL, models: null, existingModels }
+        // ponytail/issue-240: thread failure diagnostics so Phase 3 can write
+        // a cache entry with error/httpStatus (auditable over time).
+        return { name: providerName, baseURL, models: null, existingModels, error: discovery.error, httpStatus: discovery.httpStatus }
       }
 
       // API succeeded — build discovered models
@@ -374,7 +376,7 @@ export async function enhanceConfig(
     // Phase 3: Apply results + update cache
     for (const result of results) {
       if (!result) continue
-      const { name, baseURL, models, existingModels } = result
+      const { name, baseURL, models, existingModels, error, httpStatus } = result
 
       if (models && Object.keys(models).length > 0) {
         // API succeeded with new models
@@ -423,8 +425,16 @@ export async function enhanceConfig(
         openAICompatibleProviders.push({ name, baseURL, models: merged })
         cacheUpdates.providers[name] = { baseURL, models: merged, timestamp: Date.now() }
       } else if (models === null) {
-        // API failed — cache was already seeded into existingModels
-        cacheUpdates.providers[name] = { baseURL, models: existingModels, timestamp: Date.now() }
+        // API failed — cache was already seeded into existingModels.
+        // ponytail/issue-240: record failure diagnostics so failed providers
+        // get a cache entry (auditable over time) instead of silently missing.
+        cacheUpdates.providers[name] = {
+          baseURL,
+          models: existingModels,
+          timestamp: Date.now(),
+          error,
+          httpStatus,
+        }
       } else {
         // API succeeded but no new models beyond existing
         const p = providers[name]

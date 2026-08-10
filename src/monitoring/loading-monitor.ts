@@ -3,7 +3,7 @@ import type { LoadingStatus, ModelLoadingState } from '../types'
 // Model Loading State Monitor with periodic polling
 export class ModelLoadingMonitor {
   private loadingStates = new Map<string, ModelLoadingState>()
-  private pollingIntervals = new Map<string, NodeJS.Timeout>()
+  private pollingIntervals = new Map<string, ReturnType<typeof setInterval>>()
   private readonly POLL_INTERVAL = 2000 // 2 seconds
   private readonly LOADING_TIMEOUT = 300000 // 5 minutes
   

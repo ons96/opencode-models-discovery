@@ -10,7 +10,6 @@ import { readCache, writeCache, checkThrottle, setLastRunTimestamp, type CacheDa
 import { refreshTopModels, type LeaderboardCategory } from '../utils/leaderboard-fetcher'
 import type { PluginLogger } from './logger'
 import type { PluginInput } from '@opencode-ai/plugin'
-import type { OpenAIModel } from '../types'
 import type { PluginConfig } from '../types/plugin-config'
 
 interface DiscoveredProvider {
